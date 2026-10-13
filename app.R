@@ -1,5 +1,5 @@
 # ==============================================================================
-# IMPULSE DATA LAB v3.0 // 11-MODULE MATHEMATICAL SUITE
+# IMPULSE DATA LAB v3.1 // 11-MODULE MATHEMATICAL SUITE
 # R Core Engine | Shiny Reactive Framework | AI-Assisted Architecture
 # Требуется R >= 4.0 (сырые строки r"(...)"), пакеты: shiny, plotly, forecast, deSolve
 #
@@ -452,7 +452,9 @@ desc <- c(N = n, mean = m, sd = sd(series), min = min(series), q1 = q[1],
 # --- 2. Бэктест: учим модель на начале ряда, проверяем на отложенном хвосте ---
 train <- ts(series[1:(n - k)], frequency = freq)
 test  <- series[(n - k + 1):n]
-fit   <- auto.arima(train)
+use_bc <- {{bc}}                         # преобразование Бокса-Кокса: стабилизирует растущий размах сезонности
+lambda <- if (use_bc && all(series > 0)) "auto" else NULL
+fit   <- auto.arima(train, lambda = lambda)
 fc    <- forecast(fit, h = k, level = 95)
 ord   <- arimaorder(fit)
 model_name <- if (length(ord) >= 7) {
@@ -475,7 +477,8 @@ lb_lag <- min(20, floor(length(train) / 4))
 lb     <- Box.test(residuals(fit), lag = lb_lag, type = "Ljung-Box",
                    fitdf = min(length(fit$coef), lb_lag - 1))
 d_kpss <- ndiffs(train)                                      # число разностей по KPSS
-)---", data = md$data_line, freq = num(md$freq), k = num(input$md_k))
+)---", data = md$data_line, freq = num(md$freq), k = num(input$md_k),
+         bc = if (isTRUE(input$md_bc)) "TRUE" else "FALSE")
   )
 
   trimws(body)
@@ -535,6 +538,7 @@ read_user_csv <- function(path) {
 tasks <- list(
   lorenz = list(
     title = "1. Лоренц: от хаоса к покою", module = "lorenz",
+    inputs = c("lorenz_sigma", "lorenz_rho", "lorenz_beta"),
     text = paste0("Модуль 3. Подберите параметры (sigma, rho, beta) так, чтобы траектория НЕ была хаотической, ",
                   "а сходилась к точке покоя. Подсказка: неподвижные точки теряют устойчивость при ",
                   "rho_H = sigma (sigma + beta + 3) / (sigma - beta - 1)."),
@@ -555,6 +559,7 @@ tasks <- list(
 
   kepler = list(
     title = "2. Кеплер: скорость в перицентре", module = "kepler",
+    inputs = c("kepler_ecc"),
     text = paste0("Модуль 4. Задайте эксцентриситет так, чтобы скорость тела в перицентре была ровно в 4 раза ",
                   "больше, чем в апоцентре. Подсказка: v_п / v_а = (1 + e) / (1 - e)."),
     check = function(input) {
@@ -564,17 +569,33 @@ tasks <- list(
     }),
 
   oscillator = list(
-    title = "3. Осциллятор: критическое затухание", module = "oscillator",
-    text = paste0("Модуль 5. Добейтесь критического затухания: коэффициент zeta = gamma / omega0 должен равняться 1. ",
-                  "Что станет с фазовой траекторией — спираль или кривая без витков?"),
+    title = "3. Осциллятор: вернуться без колебаний и быстро", module = "oscillator",
+    inputs = c("osc_damping", "osc_freq"),
+    text = paste0("Модуль 5. Тело отпущено из x = 1. Подберите gamma и omega0 так, чтобы оно вернулось к равновесию ",
+                  "БЕЗ колебаний (смещение x нигде не уходит в минус, на фазовом портрете нет спирали) и БЫСТРО: ",
+                  "к моменту t = 25 остаточное смещение |x| < 0.01. Слишком слабое затухание даёт спираль, ",
+                  "слишком сильное — медленное «ползущее» возвращение. Ищите режим между ними."),
     check = function(input) {
-      z <- input$osc_damping / input$osc_freq
-      regime <- if (abs(z - 1) < 0.01) "критическое затухание" else if (z < 1) "колебательный режим (спираль)" else "апериодический режим"
-      list(ok = abs(z - 1) < 0.01, msg = sprintf("zeta = %.2f — %s.", z, regime))
+      env <- run_code(build_code("oscillator", input))
+      x <- env$out$x
+      n_neg <- sum(x < -1e-4)                 # отсчёты с отрицательным смещением = колебание
+      x_end <- abs(tail(x, 1))
+      z <- env$zeta
+      if (n_neg > 0) {
+        list(ok = FALSE, msg = sprintf("Колебания остались: смещение уходит в минус (%d отсчётов из %d), zeta = %.2f. Затухание слабое.",
+                                       n_neg, length(x), z))
+      } else if (x_end >= 0.01) {
+        list(ok = FALSE, msg = sprintf("Колебаний нет, но возврат медленный: при t = 25 |x| = %.3f (нужно < 0.01), zeta = %.2f. Затухание избыточное.",
+                                       x_end, z))
+      } else {
+        list(ok = TRUE, msg = sprintf("Колебаний нет, при t = 25 |x| = %.1e. zeta = %.2f — режим близок к критическому: это самое быстрое возвращение без колебаний.",
+                                      x_end, z))
+      }
     }),
 
   svd = list(
     title = "4. SVD: минимальный ранг", module = "svd",
+    inputs = c("svd_rank", "seed"),
     text = paste0("Модуль 7. Найдите НАИМЕНЬШИЙ ранг усечения k, при котором сохраняется не менее 90% энергии матрицы ",
                   "(доля суммы квадратов сингулярных чисел). Ориентируйтесь на подпись над средней панелью."),
     check = function(input) {
@@ -589,6 +610,7 @@ tasks <- list(
 
   gbm = list(
     title = "5. GBM: вероятность убытка", module = "gbm",
+    inputs = c("gbm_mu", "gbm_sigma"),
     text = paste0("Модуль 2. Подберите mu и sigma так, чтобы вероятность того, что цена через год окажется ниже ",
                   "стартовой, P(S(T) < S0), лежала в диапазоне 30–35%. Подсказка: ln(S(T)/S0) ~ N(mu - sigma^2/2, sigma^2)."),
     check = function(input) {
@@ -613,8 +635,8 @@ ui <- fluidPage(
           "Вычислительный комплекс математического, эконометрического и физического анализа // R Shiny Architecture")
       ),
       div(class = "header-badges",
-          div(class = "ai-badge", "Gemini AI-Assisted"),
-          a(class = "github-badge", href = "https://github.com/VenuK0/Impulse-Data-Base", target = "_blank", "GitHub"),
+          div(class = "ai-badge", "AI-Assisted: Gemini + Claude"),
+          a(class = "github-badge", href = "https://github.com/VenuK0/r-studio-project", target = "_blank", "GitHub"),
           div(class = "lab-badge", div(class = "status-dot"), span("11 ENGINES: ACTIVE"))
       )
   ),
@@ -765,7 +787,8 @@ ui <- fluidPage(
                   selectInput("md_freq", "Сезонность (период):",
                               choices = c("Нет (1)" = 1, "Квартальная (4)" = 4, "Месячная (12)" = 12, "Недельная (7)" = 7))
                 ),
-                sliderInput("md_k", "Отложенная часть (шагов):", min = 6, max = 48, value = 24, step = 2)
+                sliderInput("md_k", "Отложенная часть (шагов):", min = 6, max = 48, value = 24, step = 2),
+                checkboxInput("md_bc", "Преобразование Бокса–Кокса (λ авто)", value = FALSE)
               ),
 
               div(class = "panel-spacer"),
@@ -901,7 +924,7 @@ server <- function(input, output, session) {
     content = function(file) {
       d <- calc_data()
       hdr <- c("# -*- coding: UTF-8 -*-",
-               paste0("# IMPULSE DATA LAB v3.0 // модуль: ", d$mode),
+               paste0("# IMPULSE DATA LAB v3.1 // модуль: ", d$mode),
                paste0("# Сформировано: ", format(Sys.time(), "%Y-%m-%d %H:%M")),
                "# Запуск: source('<этот файл>', encoding = 'UTF-8')  # или Rscript <файл>",
                "# Пакеты: forecast, deSolve (зависит от модуля)",
@@ -926,6 +949,9 @@ server <- function(input, output, session) {
     id <- input$task_id
     res <- tryCatch(tasks[[id]]$check(input),
                     error = function(e) list(ok = FALSE, msg = paste("Не удалось проверить:", conditionMessage(e))))
+    # запоминаем, при каких параметрах получен ответ: если их изменить, ответ устареет
+    res$id   <- id
+    res$snap <- lapply(tasks[[id]]$inputs, function(i) input[[i]])
     task_answer(res)
     if (isTRUE(res$ok)) solved(union(solved(), id))
   })
@@ -941,6 +967,9 @@ server <- function(input, output, session) {
   })
   output$task_result <- renderUI({
     a <- task_answer(); req(a)
+    cur <- lapply(tasks[[a$id]]$inputs, function(i) input[[i]])
+    if (!identical(cur, a$snap))
+      return(div(class = "task-progress", "Параметры изменились — нажмите «Проверить» ещё раз."))
     div(class = if (isTRUE(a$ok)) "task-ok" else "task-bad",
         paste(if (isTRUE(a$ok)) "Верно. " else "Пока нет. ", a$msg))
   })
@@ -1211,9 +1240,10 @@ server <- function(input, output, session) {
                round(ds[c("mean", "sd", "min", "q1", "median", "q3", "max", "skew", "ex_kurt")], 3),
                format.pval(ds[["shapiro_p"]], digits = 3))),
           kv(sprintf("— Бэктест на последних %d наблюдениях —", v$k), ""),
-          kv(c("Модель (auto.arima)", "MASE: модель / эталон", "sMAPE, %: модель / эталон",
-               "RMSE: модель / эталон", "Покрытие 95% интервала", "Вывод"),
+          kv(c("Модель (auto.arima)", "Преобразование Бокса–Кокса", "MASE: модель / эталон",
+               "sMAPE, %: модель / эталон", "RMSE: модель / эталон", "Покрытие 95% интервала", "Вывод"),
              c(v$model_name,
+               if (is.null(v$fit$lambda)) "нет" else sprintf("λ = %.3f", v$fit$lambda),
                sprintf("%.3f / %.3f", mt["model", "MASE"], mt["naive", "MASE"]),
                sprintf("%.2f / %.2f", mt["model", "sMAPE"], mt["naive", "sMAPE"]),
                sprintf("%.2f / %.2f", mt["model", "RMSE"], mt["naive", "RMSE"]),
@@ -1239,6 +1269,11 @@ server <- function(input, output, session) {
 shinyApp(ui, server)
 
 # ==============================================================================
+# CHANGELOG v3.0 -> v3.1
+#  * Модуль 11: переключатель преобразования Бокса-Кокса (lambda = "auto") для рядов
+#    с растущим размахом сезонности; значение lambda в таблице расчётов.
+#  * Плашка ИИ в шапке: Gemini + Claude (как в README и docs/AI_AUDIT.md).
+#
 # CHANGELOG v2.4 -> v3.0
 #  * Модуль 11 "Свои данные": загрузка CSV (авто-разделитель, десятичный знак,
 #    кодировка) или демо-наборы; описательная статистика; бэктест auto.arima

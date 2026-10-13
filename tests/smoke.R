@@ -64,6 +64,15 @@ ok(e$n == 144 && e$k == 24, "AirPassengers: n = 144, k = 24")
 ok(all(dim(e$metrics) == c(2, 3)) && is.finite(e$coverage), "метрики и покрытие посчитаны")
 ok(is.finite(e$lb$p.value), "тест Льюнга-Бокса")
 
+cat("[mydata: Бокс-Кокс]\n")
+e0 <- run("mydata", modifyList(inp, list(md_bc = FALSE)))
+e2 <- run("mydata", modifyList(inp, list(md_bc = TRUE)))
+ok(is.null(e0$fit$lambda), "без флага преобразования нет")
+ok(!is.null(e2$fit$lambda) && is.finite(e2$fit$lambda), "lambda подобрана")
+ok(all(is.finite(e2$metrics)), "метрики с преобразованием конечны")
+cat(sprintf("  MASE модели на AirPassengers: без Бокса-Кокса %.3f | с ним %.3f | эталон %.3f\n",
+            e0$metrics["model", "MASE"], e2$metrics["model", "MASE"], e0$metrics["naive", "MASE"]))
+
 cat("[mydata: CSV]\n")
 for (f in c("data/demo_monthly_sales.csv", "data/demo_monthly_sales_ru.csv")) {
   cd  <- read_user_csv(f)
@@ -80,8 +89,10 @@ cat("[задания]\n")
 ok(tasks$kepler$check(list(kepler_ecc = 0.6))$ok && !tasks$kepler$check(list(kepler_ecc = 0.5))$ok, "Кеплер")
 ok(tasks$lorenz$check(list(lorenz_sigma = 10, lorenz_rho = 14, lorenz_beta = 8 / 3))$ok &&
    !tasks$lorenz$check(list(lorenz_sigma = 10, lorenz_rho = 28, lorenz_beta = 8 / 3))$ok, "Лоренц")
-ok(tasks$oscillator$check(list(osc_damping = 1, osc_freq = 1))$ok &&
-   !tasks$oscillator$check(list(osc_damping = 0.15, osc_freq = 1.5))$ok, "Осциллятор")
+osc <- function(g, w) tasks$oscillator$check(modifyList(inp, list(osc_damping = g, osc_freq = w)))$ok
+ok(osc(1, 1),      "Осциллятор: критическое затухание принято")
+ok(!osc(0.15, 1.5), "Осциллятор: колебательный режим отклонён")
+ok(!osc(1, 0.5),    "Осциллятор: слишком сильное затухание (ползёт) отклонено")
 ok(tasks$gbm$check(list(gbm_mu = 0.1, gbm_sigma = 0.2))$ok &&
    !tasks$gbm$check(list(gbm_mu = 0.05, gbm_sigma = 0.2))$ok, "GBM")
 svd_ok <- sapply(1:8, function(k) tasks$svd$check(modifyList(inp, list(svd_rank = k)))$ok)
